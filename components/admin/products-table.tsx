@@ -33,10 +33,22 @@ export function ProductsTable({ products, onProductsChange }: ProductsTableProps
 
     setIsLoading(true)
     try {
+      // Use 'adminToken' for admin-specific API calls
+      const adminToken = localStorage.getItem("adminToken")
+      if (!adminToken) {
+        toast({
+          title: "Authentication Error",
+          description: "Admin token not found. Please log in again.",
+          variant: "destructive",
+        })
+        setIsLoading(false)
+        return
+      }
+
       const response = await fetch(`/api/admin/products/${productId}`, {
         method: "DELETE",
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("token")}`,
+          Authorization: `Bearer ${adminToken}`, // Use adminToken here
         },
       })
 
@@ -47,13 +59,15 @@ export function ProductsTable({ products, onProductsChange }: ProductsTableProps
         })
         onProductsChange()
       } else {
+        const errorData = await response.json()
         toast({
           title: "Error",
-          description: "Failed to delete product",
+          description: errorData.message || "Failed to delete product",
           variant: "destructive",
         })
       }
     } catch (error) {
+      console.error("Error deleting product:", error)
       toast({
         title: "Error",
         description: "Something went wrong",
