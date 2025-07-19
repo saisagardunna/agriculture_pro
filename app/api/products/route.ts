@@ -4,7 +4,7 @@ import { Product } from "@/models/Product"
 
 export async function GET() {
   try {
-    await connectDB()
+    await connectDB() // Connects to MongoDB
     const products = await Product.find({ status: "active" }).sort({ createdAt: -1 })
     return NextResponse.json(products)
   } catch (error) {

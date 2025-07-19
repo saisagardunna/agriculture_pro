@@ -27,12 +27,14 @@ export default function DashboardPage() {
 
   const fetchProducts = async () => {
     try {
+      // This is the API call to fetch products
       const response = await fetch("/api/products")
       const data = await response.json()
       setProducts(data)
       setFilteredProducts(data)
     } catch (error) {
       console.error("Error fetching products:", error)
+      // You might want to add a toast or state to show an error message to the user
     }
   }
 

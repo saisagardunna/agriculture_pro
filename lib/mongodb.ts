@@ -9,7 +9,7 @@ if (!cached) {
 }
 
 export async function connectDB() {
-  const MONGODB_URI = process.env.MONGODB_URI // <--- MONGODB_URI is used here
+  const MONGODB_URI = process.env.MONGODB_URI // This environment variable is crucial
   if (!MONGODB_URI) {
     throw new Error("Please define the MONGODB_URI environment variable")
   }
