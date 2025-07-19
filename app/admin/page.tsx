@@ -69,6 +69,7 @@ export default function AdminPage() {
   const fetchProducts = async () => {
     try {
       const token = localStorage.getItem("adminToken")
+      console.log("Admin Token:", token)
       const response = await fetch("/api/admin/products", {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -116,6 +117,7 @@ export default function AdminPage() {
 
     try {
       const token = localStorage.getItem("adminToken")
+      console.log("Admin Token for Add Product:", token)
       const response = await fetch("/api/admin/products", {
         method: "POST",
         headers: {
