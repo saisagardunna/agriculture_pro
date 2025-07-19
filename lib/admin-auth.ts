@@ -9,7 +9,7 @@ export async function verifyAdminToken(request: NextRequest) {
       return null
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any // <--- JWT_SECRET is used here for verification
 
     // Ensure it's an admin token
     if (decoded.role !== "admin") {
@@ -18,6 +18,8 @@ export async function verifyAdminToken(request: NextRequest) {
 
     return decoded
   } catch (error) {
+    // Log the error for debugging purposes, but return null for security
+    console.error("Token verification failed:", error)
     return null
   }
 }

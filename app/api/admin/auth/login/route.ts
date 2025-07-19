@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
         role: "admin",
         permissions: admin.permissions,
       },
-      process.env.JWT_SECRET!,
+      process.env.JWT_SECRET!, // <--- This is where JWT_SECRET is used
       { expiresIn: "24h" },
     )
 

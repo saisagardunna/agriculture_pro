@@ -5,7 +5,7 @@ import { verifyAdminToken, hasPermission } from "@/lib/admin-auth"
 
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const admin = await verifyAdminToken(request)
+    const admin = await verifyAdminToken(request) // <--- Uses verifyAdminToken
     if (!admin || !hasPermission(admin.permissions, "manage_products")) {
       return NextResponse.json({ message: "Unauthorized admin access" }, { status: 401 })
     }
@@ -26,7 +26,7 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
 
 export async function PUT(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const admin = await verifyAdminToken(request)
+    const admin = await verifyAdminToken(request) // <--- Uses verifyAdminToken
     if (!admin || !hasPermission(admin.permissions, "manage_products")) {
       return NextResponse.json({ message: "Unauthorized admin access" }, { status: 401 })
     }

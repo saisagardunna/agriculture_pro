@@ -69,7 +69,7 @@ const Admin = mongoose.models.Admin || mongoose.model("Admin", adminSchema)
 
 const MONGODB_URI =
   process.env.MONGODB_URI ||
-  "mongodb+srv://damerasrimanthreddy:1234@agri.4aqzbx2.mongodb.net/?retryWrites=true&w=majority&appName=agri"
+  "mongodb+srv://damerasrimanthreddy:1234@agri.4aqzbx2.mongodb.net/?retryWrites=true&w=majority&appName=agri" // <--- MONGODB_URI is used here
 
 async function seedAdmin() {
   try {
