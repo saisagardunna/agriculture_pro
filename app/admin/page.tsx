@@ -35,6 +35,9 @@ import { ProductsTable } from "@/components/admin/products-table"
 import { useRouter } from "next/navigation"
 import { AnimatedCounter } from "@/components/ui/animated-counter"
 import { ScrollReveal } from "@/components/ui/scroll-reveal"
+import { AdminNavbar } from "@/components/layout/admin-navbar" // Import AdminNavbar
+import { LoadingSpinner } from "@/components/ui/loading-spinner" // Import LoadingSpinner
+import { UsersTable } from "@/components/admin/users-table"
 
 export default function AdminPage() {
   const [products, setProducts] = useState([])
@@ -47,37 +50,95 @@ export default function AdminPage() {
   })
   const [isAddingProduct, setIsAddingProduct] = useState(false)
   const [adminUser, setAdminUser] = useState<any>(null)
+  const [pageLoading, setPageLoading] = useState(true) // New state for page loading
   const { toast } = useToast()
   const router = useRouter()
+  const [users, setUsers] = useState([])
+
+  const fetchUsers = async () => {
+    try {
+      const token = localStorage.getItem("adminToken")
+      const response = await fetch("/api/admin/users", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setUsers(data.data)
+      } else {
+        const errorData = await response.json()
+        console.error("Error fetching users:", errorData.message || response.statusText)
+        toast({
+          title: "Error",
+          description: errorData.message || "Failed to fetch users.",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error("Network error fetching users:", error)
+      toast({
+        title: "Error",
+        description: "Network error while fetching users.",
+        variant: "destructive",
+      })
+    }
+  }
 
   useEffect(() => {
-    // Check admin authentication
-    const adminToken = localStorage.getItem("adminToken")
-    const adminUserData = localStorage.getItem("adminUser")
+    const initializeAdminPage = async () => {
+      setPageLoading(true)
+      // Check admin authentication
+      const adminToken = localStorage.getItem("adminToken")
+      const adminUserData = localStorage.getItem("adminUser")
 
-    if (!adminToken || !adminUserData) {
-      router.push("/admin/login")
-      return
+      if (!adminToken || !adminUserData) {
+        router.push("/admin/login")
+        return
+      }
+
+      setAdminUser(JSON.parse(adminUserData))
+
+      // Fetch data concurrently
+      await Promise.all([fetchProducts(), fetchSalesData(), fetchStats(), fetchUsers()])
+      setPageLoading(false)
     }
 
-    setAdminUser(JSON.parse(adminUserData))
-    fetchProducts()
-    fetchSalesData()
-    fetchStats()
+    initializeAdminPage()
   }, [])
 
   const fetchProducts = async () => {
     try {
       const token = localStorage.getItem("adminToken")
+      console.log("Admin Token for Fetch Products:", token) // Log for debugging
       const response = await fetch("/api/admin/products", {
         headers: {
           Authorization: `Bearer ${token}`,
         },
       })
-      const data = await response.json()
-      setProducts(data)
+      if (response.ok) {
+        const data = await response.json()
+        setProducts(data)
+      } else {
+        const errorData = await response.json()
+        console.error("Error fetching products:", errorData.message || response.statusText)
+        toast({
+          title: "Error",
+          description: errorData.message || "Failed to fetch products.",
+          variant: "destructive",
+        })
+        // If unauthorized, redirect to login
+        if (response.status === 401) {
+          router.push("/admin/login")
+        }
+      }
     } catch (error) {
-      console.error("Error fetching products:", error)
+      console.error("Network error fetching products:", error)
+      toast({
+        title: "Error",
+        description: "Network error while fetching products.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -116,6 +177,7 @@ export default function AdminPage() {
 
     try {
       const token = localStorage.getItem("adminToken")
+      console.log("Admin Token for Add Product:", token)
       const response = await fetch("/api/admin/products", {
         method: "POST",
         headers: {
@@ -131,16 +193,18 @@ export default function AdminPage() {
           description: "Product added successfully!",
         })
         setIsAddingProduct(false)
-        fetchProducts()
+        fetchProducts() // Re-fetch products to update the table
         e.currentTarget.reset()
       } else {
+        const errorData = await response.json()
         toast({
           title: "Error",
-          description: "Failed to add product",
+          description: errorData.message || "Failed to add product",
           variant: "destructive",
         })
       }
     } catch (error) {
+      console.error("Error adding product:", error)
       toast({
         title: "Error",
         description: "Something went wrong",
@@ -155,20 +219,27 @@ export default function AdminPage() {
     router.push("/admin/login")
   }
 
-  if (!adminUser) {
+  if (pageLoading) {
     return (
       <div className="min-h-screen bg-gradient-mesh flex items-center justify-center">
-        <div className="loading-dots">
-          <div></div>
-          <div></div>
-          <div></div>
-        </div>
+        <LoadingSpinner size="lg" />
+      </div>
+    )
+  }
+
+  if (!adminUser) {
+    // This case should ideally be handled by the router.push in useEffect,
+    // but as a fallback, show a loading spinner or redirect.
+    return (
+      <div className="min-h-screen bg-gradient-mesh flex items-center justify-center">
+        <LoadingSpinner size="lg" />
       </div>
     )
   }
 
   return (
     <div className="min-h-screen bg-gradient-mesh">
+      <AdminNavbar /> {/* Add AdminNavbar here */}
       {/* Admin Header */}
       <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 border-b border-white/10">
         <div className="absolute inset-0 noise-texture opacity-30"></div>
@@ -218,7 +289,6 @@ export default function AdminPage() {
           </div>
         </div>
       </div>
-
       <div className="container mx-auto px-6 py-8">
         <Tabs defaultValue="dashboard" className="space-y-8">
           <TabsList className="grid w-full grid-cols-5 glass-effect border-0 shadow-xl">
@@ -555,11 +625,7 @@ export default function AdminPage() {
                   <CardDescription>Manage customer accounts and permissions</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="text-center py-12">
-                    <Users className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-                    <h3 className="text-lg font-semibold text-gray-900 mb-2">User Management Coming Soon</h3>
-                    <p className="text-gray-600">Comprehensive user management tools will be available here</p>
-                  </div>
+                  <UsersTable users={users} onUsersChange={fetchUsers} />
                 </CardContent>
               </Card>
             </ScrollReveal>

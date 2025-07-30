@@ -1,8 +1,45 @@
-import mongoose from "mongoose"
+import mongoose, { Schema, Document } from 'mongoose';
 
-const userSchema = new mongoose.Schema(
+export interface IUser extends Document {
+  firstName: string;
+  lastName: string;
+  email: string;
+  password: string;
+  phone: string;
+  role: 'customer' | 'admin'; // Use 'customer' for payment system; change to 'user' if needed
+  address?: {
+    street: string;
+    city: string;
+    state: string;
+    zipCode: string;
+    country: string;
+  };
+  bio?: string;
+  profileImage?: string;
+  wishlist?: mongoose.Types.ObjectId[];
+  preferences?: {
+    notifications: {
+      email: boolean;
+      sms: boolean;
+      push: boolean;
+    };
+    language: string;
+    currency: string;
+  };
+  isEmailVerified: boolean;
+  isPhoneVerified: boolean;
+  lastLogin?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const userSchema: Schema = new Schema(
   {
-    name: {
+    firstName: {
+      type: String,
+      required: true,
+    },
+    lastName: {
       type: String,
       required: true,
     },
@@ -21,15 +58,15 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["customer", "admin"],
-      default: "customer",
+      enum: ['customer', 'admin'],
+      default: 'customer',
     },
     address: {
-      street: String,
-      city: String,
-      state: String,
-      zipCode: String,
-      country: String,
+      street: { type: String, required: true },
+      city: { type: String, required: true },
+      state: { type: String, required: true },
+      zipCode: { type: String, required: true },
+      country: { type: String, required: true },
     },
     bio: {
       type: String,
@@ -41,7 +78,7 @@ const userSchema = new mongoose.Schema(
     wishlist: [
       {
         type: mongoose.Schema.Types.ObjectId,
-        ref: "Product",
+        ref: 'Product',
       },
     ],
     preferences: {
@@ -50,8 +87,8 @@ const userSchema = new mongoose.Schema(
         sms: { type: Boolean, default: false },
         push: { type: Boolean, default: true },
       },
-      language: { type: String, default: "en" },
-      currency: { type: String, default: "INR" },
+      language: { type: String, default: 'en' },
+      currency: { type: String, default: 'INR' },
     },
     isEmailVerified: {
       type: Boolean,
@@ -67,7 +104,7 @@ const userSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  },
-)
+  }
+);
 
-export const User = mongoose.models.User || mongoose.model("User", userSchema)
+export default mongoose.models.User || mongoose.model<IUser>('User', userSchema);
