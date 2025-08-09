@@ -1,0 +1,916 @@
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\checkout\route.ts ===
+import { type NextRequest, NextResponse } from 'next/server';
+import Razorpay from 'razorpay';
+import { verifyToken, UserPayload } from '@/lib/auth';
+import { connectDB } from '@/lib/mongodb';
+import { Order, OrderDoc } from '@/models/Order';
+
+interface RequestBody {
+  items: any[];
+  totalAmount: number; // in paise
+  customer?: {
+    name: string;
+    email: string;
+    contact: string;
+  };
+}
+
+export async function POST(request: NextRequest) {
+  if (!request.headers.get('content-type')?.includes('application/json')) {
+    return NextResponse.json({ message: 'Expected application/json' }, { status: 415 });
+  }
+
+  try {
+    // Auth
+    const user: UserPayload | null = await verifyToken(request);
+    if (!user) return NextResponse.json({ message: 'Unauthorized' }, { status: 401 });
+
+    // DB connect
+    await connectDB();
+
+    const { items, totalAmount, customer } = (await request.json()) as RequestBody;
+    if (!Array.isArray(items) || items.length === 0 || typeof totalAmount !== 'number' || totalAmount <= 0) {
+      return NextResponse.json({ message: 'Invalid order data' }, { status: 400 });
+    }
+
+    // Validate customer data
+    if (!customer?.name || !customer?.email || !customer?.contact) {
+      return NextResponse.json({ message: 'Invalid customer data' }, { status: 400 });
+    }
+
+    // Env check
+    const { RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, NEXT_PUBLIC_APP_URL } = process.env;
+    if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+      return NextResponse.json({ message: 'Razorpay keys not configured' }, { status: 500 });
+    }
+    if (!NEXT_PUBLIC_APP_URL) {
+      console.warn('NEXT_PUBLIC_APP_URL missing; callback_url may be wrong');
+    }
+
+    // Create internal order (store in rupees)
+    const order = (await Order.create({
+      userId: user.userId,
+      items,
+      totalAmount: totalAmount / 100, // Convert paise to rupees for storage
+      status: 'pending',
+      paymentStatus: 'pending',
+      customer,
+    })) as OrderDoc;
+
+    const razorpay = new Razorpay({
+      key_id: RAZORPAY_KEY_ID,
+      key_secret: RAZORPAY_KEY_SECRET,
+    });
+
+    // Create payment link (amount in paise)
+    const paymentLink = await razorpay.paymentLink.create({
+      amount: totalAmount, // Already in paise
+      currency: 'INR',
+      accept_partial: false,
+      description: `Order #${order._id.toString()}`, // Type-safe
+      customer: {
+        name: customer.name,
+        email: customer.email,
+        contact: customer.contact,
+      },
+      notify: { sms: true, email: true },
+      reminder_enable: true,
+      notes: { userId: user.userId, orderId: order._id.toString() }, // Type-safe
+      callback_url: `${NEXT_PUBLIC_APP_URL ?? ''}/api/payment/success`,
+      callback_method: 'get',
+    });
+
+    order.paymentUrl = paymentLink.short_url;
+    order.razorpayPaymentLinkId = paymentLink.id;
+    await order.save();
+
+    return NextResponse.json({
+      success: true,
+      paymentUrl: paymentLink.short_url,
+      orderId: order._id.toString(), // Type-safe
+      razorpayPaymentLinkId: paymentLink.id,
+    });
+  } catch (err: any) {
+    console.error('Checkout error:', err);
+    return NextResponse.json({ message: err.message || 'Internal server error' }, { status: 500 });
+  }
+}
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\create-order\page.tsx ===
+"use client";
+
+import React, { useState } from "react";
+import Script from "next/script";
+
+declare global {
+  interface Window {
+    Razorpay: any;
+  }
+}
+
+const PaymentPage: React.FC = () => {
+  const AMOUNT = 100; // INR
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [scriptLoaded, setScriptLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handlePayment = async () => {
+    if (!scriptLoaded) {
+      setError("Payment SDK not loaded yet. Try again shortly.");
+      return;
+    }
+
+    setIsProcessing(true);
+    setError(null);
+
+    try {
+      // Call backend to create order
+      const res = await fetch("/api/checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // include Authorization header if needed, e.g., Bearer token
+        },
+        body: JSON.stringify({
+          items: [{ name: "Sample Item", qty: 1 }],
+          totalAmount: AMOUNT,
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message || "Failed to create order");
+      }
+
+      const data = await res.json();
+      if (!data.orderId) {
+        throw new Error("No order_id returned from server");
+      }
+
+      const options = {
+        key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID as string,
+        amount: AMOUNT * 100, // in paise: redundant since Razorpay uses backend order, but kept for clarity
+        currency: "INR",
+        name: "Your Company Name",
+        description: `Payment for Order #${data.internalOrderId}`,
+        order_id: data.orderId, // required for classic flow
+        handler: async function (response: any) {
+          console.log("Payment success:", response);
+          // Verify payment on backend
+          try {
+            const verifyRes = await fetch("/api/payment/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_signature: response.razorpay_signature,
+                internalOrderId: data.internalOrderId,
+              }),
+            });
+            if (!verifyRes.ok) {
+              const v = await verifyRes.json().catch(() => ({}));
+              throw new Error(v.message || "Verification failed");
+            }
+            alert("Payment verified successfully!");
+          } catch (verErr: any) {
+            console.error("Verification error:", verErr);
+            alert("Payment succeeded but verification failed. Contact support.");
+          }
+        },
+        prefill: {
+          name: "John Doe",
+          email: "johndoe@example.com",
+          contact: "9999999999",
+        },
+        theme: {
+          color: "#3399cc",
+        },
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on("payment.failed", function (response: any) {
+        console.error("Payment failed:", response);
+        alert("Payment failed. Please try again.");
+      });
+      rzp.open();
+    } catch (err: any) {
+      console.error("Payment initiation error:", err);
+      setError(err.message || "Something went wrong");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
+      <Script
+        src="https://checkout.razorpay.com/v1/checkout.js"
+        onLoad={() => setScriptLoaded(true)}
+        onError={() => setError("Failed to load Razorpay SDK.")}
+      />
+      <div className="p-6 bg-white rounded-lg shadow-md w-full max-w-md">
+        <h1 className="text-2xl font-bold mb-4">Payment Page</h1>
+        <p className="mb-4">Amount to pay: {AMOUNT} INR</p>
+        {error && (
+          <div className="mb-3 text-sm text-red-600 bg-red-100 p-2 rounded">
+            {error}
+          </div>
+        )}
+        <button
+          onClick={handlePayment}
+          disabled={isProcessing}
+          className="w-full px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+        >
+          {isProcessing ? "Processing..." : "Pay Now"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default PaymentPage;
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\fetch-payment-link\route.ts ===
+import { type NextRequest, NextResponse } from 'next/server';
+import Razorpay from 'razorpay';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const paymentLinkId = searchParams.get('paymentLinkId');
+
+    if (!paymentLinkId) {
+      return NextResponse.json({ message: 'Payment link ID required' }, { status: 400 });
+    }
+
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      return NextResponse.json({ message: 'Razorpay keys not configured' }, { status: 500 });
+    }
+
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+
+    const paymentLink = await razorpay.paymentLink.fetch(paymentLinkId);
+
+    if (typeof paymentLink.amount !== 'number') {
+      return NextResponse.json({ message: 'Invalid payment link amount' }, { status: 500 });
+    }
+
+    return NextResponse.json({
+      amount: paymentLink.amount / 100,
+      status: paymentLink.status,
+      short_url: paymentLink.short_url,
+    });
+  } catch (error: any) {
+    console.error('Fetch Payment Link Error:', error);
+    if (error.statusCode === 401) {
+      return NextResponse.json({ message: 'Unauthorized: Invalid API keys' }, { status: 401 });
+    }
+    return NextResponse.json({ message: `Error: ${error.message}` }, { status: 500 });
+  }
+}
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\payment\create-razorpay-order\route.ts ===
+import { NextResponse, NextRequest } from 'next/server';
+import Razorpay from 'razorpay';
+import { verifyToken } from '@/lib/auth';
+import { connectDB } from '@/lib/mongodb';
+import { Order, OrderDoc } from '@/models/Order';
+
+export async function POST(request: NextRequest) {
+  try {
+    const { items, totalAmount, customer } = await request.json();
+
+    if (!Array.isArray(items) || items.length === 0 || typeof totalAmount !== 'number' || totalAmount <= 0) {
+      return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
+    }
+
+    const user = await verifyToken(request);
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET || !process.env.NEXT_PUBLIC_APP_URL) {
+      return NextResponse.json({ error: 'Server misconfiguration' }, { status: 500 });
+    }
+
+    await connectDB();
+
+    const order = (await Order.create({
+      userId: user.userId,
+      items,
+      totalAmount: totalAmount / 100,
+      status: 'pending',
+      paymentStatus: 'pending',
+      customer,
+    })) as OrderDoc;
+
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET,
+    });
+
+    const paymentLink = await razorpay.paymentLink.create({
+      amount: totalAmount,
+      currency: 'INR',
+      accept_partial: false,
+      description: `Order #${order._id}`,
+      customer: {
+        name: customer?.name || user.name || 'Customer',
+        email: customer?.email || user.email,
+        contact: customer?.contact || user.phone,
+      },
+      notify: { sms: true, email: true },
+      reminder_enable: true,
+      notes: { userId: user.userId, orderId: order._id.toString() },
+      callback_url: `${process.env.NEXT_PUBLIC_APP_URL}/api/payment/success`,
+      callback_method: 'get',
+    });
+
+    order.paymentUrl = paymentLink.short_url;
+    order.razorpayPaymentLinkId = paymentLink.id;
+    await order.save();
+
+    return NextResponse.json({
+      success: true,
+      paymentUrl: paymentLink.short_url,
+      orderId: order._id,
+      razorpayPaymentLinkId: paymentLink.id,
+    });
+  } catch (err: any) {
+    console.error('Create order error:', err);
+    return NextResponse.json({ error: err.message || 'Internal error' }, { status: 500 });
+  }
+}
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\payment\success\page.tsx ===
+import { Button } from '@/components/ui/button';
+import { CheckCircle } from 'lucide-react';
+import Link from 'next/link';
+
+export default function PaymentSuccessPage() {
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="text-center">
+        <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-4" />
+        <h1 className="text-3xl font-bold text-gray-900 mb-4">Payment Successful!</h1>
+        <p className="text-gray-600 mb-8">Thank you for your purchase. Your order has been confirmed.</p>
+        <Link href="/dashboard">
+          <Button size="lg">Return to Dashboard</Button>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\payment\success\page.tsx ===
+import { Button } from '@/components/ui/button';
+import { CheckCircle } from 'lucide-react';
+import Link from 'next/link';
+
+export default function PaymentSuccessPage() {
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="text-center">
+        <CheckCircle className="h-16 w-16 text-green-500 mx-auto mb-4" />
+        <h1 className="text-3xl font-bold text-gray-900 mb-4">Payment Successful!</h1>
+        <p className="text-gray-600 mb-8">Thank you for your purchase. Your order has been confirmed.</p>
+        <Link href="/dashboard">
+          <Button size="lg">Return to Dashboard</Button>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\payment\success\route.ts ===
+import { NextRequest, NextResponse } from 'next/server';
+import Razorpay from 'razorpay';
+import { connectDB } from '@/lib/mongodb';
+import { Order } from '@/models/Order';
+
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const paymentLinkId = searchParams.get('razorpay_payment_link_id');
+    const paymentId = searchParams.get('razorpay_payment_id');
+    const paymentLinkStatus = searchParams.get('razorpay_payment_link_status');
+
+    if (!paymentLinkId || !paymentId || !paymentLinkStatus) {
+      return NextResponse.json({ message: 'Missing required parameters' }, { status: 400 });
+    }
+
+    const { RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET } = process.env;
+    if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+      return NextResponse.json({ message: 'Razorpay keys not configured' }, { status: 500 });
+    }
+
+    await connectDB();
+
+    const order = await Order.findOne({ razorpayPaymentLinkId: paymentLinkId });
+    if (!order) {
+      return NextResponse.json({ message: 'Order not found' }, { status: 404 });
+    }
+
+    if (paymentLinkStatus === 'paid') {
+      order.paymentStatus = 'completed';
+      order.status = 'confirmed';
+      order.paymentId = paymentId;
+      await order.save();
+    }
+
+    // Redirect to a success page (update with your frontend route)
+    return NextResponse.redirect(new URL('/payment/success', process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'));
+  } catch (err: any) {
+    console.error('Payment success callback error:', err);
+    return NextResponse.json({ message: err.message || 'Internal server error' }, { status: 500 });
+  }
+}
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\payment\verify\route.ts ===
+import { NextResponse, NextRequest } from 'next/server';
+import crypto from 'crypto';
+import { connectDB } from '@/lib/mongodb';
+import { Order } from '@/models/Order';
+
+export async function POST(request: NextRequest) {
+  try {
+    await connectDB();
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = await request.json();
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return NextResponse.json({ message: 'Missing required fields' }, { status: 400 });
+    }
+
+    const generated = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET!)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (generated !== razorpay_signature) {
+      return NextResponse.json({ message: 'Signature mismatch' }, { status: 400 });
+    }
+
+    // Update order status
+    const order = await Order.findOne({ razorpayOrderId: razorpay_order_id });
+    if (!order) {
+      return NextResponse.json({ message: 'Order not found' }, { status: 404 });
+    }
+
+    order.paymentStatus = 'completed';
+    order.status = 'confirmed';
+    order.paymentId = razorpay_payment_id;
+    await order.save();
+
+    return NextResponse.json({ message: 'Payment verified', orderId: order._id }, { status: 200 });
+  } catch (err: any) {
+    console.error('Payment verification error:', err);
+    return NextResponse.json({ message: err.message || 'Internal server error' }, { status: 500 });
+  }
+}
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\payment\webhook\route.ts ===
+import { NextRequest, NextResponse } from 'next/server';
+import crypto from 'crypto';
+import { connectDB } from '@/lib/mongodb';
+import { Order } from '@/models/Order';
+
+const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+
+export async function POST(request: NextRequest) {
+  const body = await request.text();
+  const signature = request.headers.get('x-razorpay-signature');
+
+  if (!signature) {
+    return NextResponse.json({ message: 'Signature missing' }, { status: 400 });
+  }
+
+  // Verify signature
+  const expectedSignature = crypto.createHmac('sha256', RAZORPAY_WEBHOOK_SECRET).update(body).digest('hex');
+  if (signature !== expectedSignature) {
+    return NextResponse.json({ message: 'Invalid signature' }, { status: 401 });
+  }
+
+  const payload = JSON.parse(body);
+
+  if (payload.event === 'payment_link.paid') {
+    try {
+      await connectDB();
+
+      const paymentLink = payload.payload.payment_link.entity;
+      const paymentLinkId = paymentLink.id;
+      const paymentId = paymentLink.payment_id;
+      const amountPaid = paymentLink.amount_paid;
+      const status = paymentLink.status;
+
+      const order = await Order.findOne({ razorpayPaymentLinkId: paymentLinkId });
+      if (!order) {
+        console.warn(`Order not found for payment link ID: ${paymentLinkId}`);
+        return NextResponse.json({ message: 'Order not found' }, { status: 404 });
+      }
+
+      order.paymentId = paymentId;
+      order.paymentStatus = status === 'paid' ? 'completed' : 'failed';
+      order.status = status === 'paid' ? 'confirmed' : order.status;
+      order.totalAmount = amountPaid / 100;
+      await order.save();
+
+      return NextResponse.json({ message: 'Order updated successfully' });
+    } catch (error) {
+      console.error('Webhook processing error:', error);
+      return NextResponse.json({ message: 'Internal server error' }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ message: 'Event ignored' });
+}
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\api\checkout.ts ===
+// /app/api/checkout/route.ts
+import { NextResponse } from 'next/server';
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const { items, totalAmount, customer } = body;
+
+    // Basic validation
+    if (!Array.isArray(items) || items.length === 0) {
+      return NextResponse.json({ message: 'No items in cart' }, { status: 400 });
+    }
+    if (!totalAmount || totalAmount <= 0) {
+      return NextResponse.json({ message: 'Invalid total amount' }, { status: 400 });
+    }
+    if (!customer?.name || !customer?.email || !customer?.contact) {
+      return NextResponse.json({ message: 'Invalid customer info' }, { status: 400 });
+    }
+
+    // Simulate Razorpay payment link creation
+    // In real app: call Razorpay API here
+    const paymentUrl = `https://rzp.io/l/test-payment-link`;
+
+    // Return success + payment URL
+    return NextResponse.json({
+      success: true,
+      paymentUrl,
+    });
+  } catch (error: any) {
+    console.error('Checkout API error:', error);
+    return NextResponse.json({ message: 'Internal server error' }, { status: 500 });
+  }
+}
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\app\cart\page.tsx ===
+"use client";
+
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import Image from "next/image";
+import Link from "next/link";
+import { useToast } from "@/hooks/use-toast";
+import { useCart, CartItem } from "@/hooks/use-cart";
+import { Button } from "@/components/ui/button";
+import {
+  Minus,
+  Plus,
+  Trash2,
+  ShoppingBag,
+} from "lucide-react";
+
+export default function CartPage() {
+  const { items, updateQuantity, removeItem, getTotalPrice, clearCart } = useCart();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const { toast } = useToast();
+  const router = useRouter();
+
+  // Check if user is authenticated on mount
+  useEffect(() => {
+    async function checkAuth() {
+      try {
+        const res = await fetch("/api/auth/check", {
+          credentials: "include",
+        });
+        setIsAuthenticated(res.ok);
+      } catch {
+        setIsAuthenticated(false);
+      }
+    }
+    checkAuth();
+  }, []);
+
+  // Calculate total including shipping and tax
+  const calculateTotal = () => {
+    const subtotal = getTotalPrice();
+    const shipping = 50; // flat shipping charge
+    const tax = subtotal * 0.18; // 18% GST
+    return subtotal + shipping + tax;
+  };
+
+  // Handle checkout button click
+  const handleCheckout = async () => {
+    if (!isAuthenticated) {
+      toast({
+        title: "Error",
+        description: "Please log in to proceed with checkout",
+        variant: "destructive",
+      });
+      router.push("/login");
+      return;
+    }
+
+    setIsProcessing(true);
+    try {
+      const totalAmount = Math.round(calculateTotal() * 100); // amount in paise
+      const customer = {
+        name: "Test User", // Replace with real user info
+        email: "test@example.com",
+        contact: "+919999999999",
+      };
+
+      const res = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ items, totalAmount, customer }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Checkout failed");
+
+      if (data.success && data.paymentUrl) {
+        window.location.href = data.paymentUrl;
+      } else {
+        throw new Error(data.message || "No payment URL");
+      }
+    } catch (error: any) {
+      toast({ title: "Checkout error", description: error.message, variant: "destructive" });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  if (items.length === 0) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        {/* Replace with your Navbar if you have one */}
+        <div className="container mx-auto px-4 py-16 text-center">
+          <ShoppingBag className="mx-auto mb-6 text-gray-400" size={96} />
+          <h1 className="text-3xl font-bold mb-4">Your cart is empty</h1>
+          <p className="text-gray-600 mb-8">Looks like you haven't added any products yet.</p>
+          <Link href="/dashboard">
+            <Button size="lg">Continue Shopping</Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Replace with your Navbar if you have one */}
+      <div className="container mx-auto px-4 py-8">
+        <h1 className="text-3xl font-bold mb-8">Shopping Cart</h1>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Cart Items Section */}
+          <div className="lg:col-span-2">
+            <div className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-xl font-semibold mb-4">Cart Items ({items.length})</h2>
+              <div className="space-y-4">
+                {items.map((item: CartItem) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center gap-4 border rounded p-4"
+                  >
+                    <Image
+                      src={item.image || "/placeholder.svg"}
+                      alt={item.name}
+                      width={80}
+                      height={80}
+                      className="rounded object-cover"
+                    />
+                    <div className="flex-1">
+                      <h3 className="font-semibold">{item.name}</h3>
+                      <p className="text-gray-600">₹{item.price.toFixed(2)}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => updateQuantity(item.id, item.quantity - 1)}
+                        disabled={item.quantity <= 1}
+                      >
+                        <Minus size={16} />
+                      </Button>
+                      <span className="w-8 text-center">{item.quantity}</span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => updateQuantity(item.id, item.quantity + 1)}
+                      >
+                        <Plus size={16} />
+                      </Button>
+                    </div>
+                    <div className="text-right">
+                      <p className="font-semibold">
+                        ₹{(item.price * item.quantity).toFixed(2)}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => removeItem(item.id)}
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        <Trash2 size={16} />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Order Summary Section */}
+          <div>
+            <div className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-xl font-semibold mb-4">Order Summary</h2>
+              <div className="space-y-4">
+                <div className="flex justify-between">
+                  <span>Subtotal</span>
+                  <span>₹{getTotalPrice().toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Shipping</span>
+                  <span>₹50.00</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Tax (18%)</span>
+                  <span>₹{(getTotalPrice() * 0.18).toFixed(2)}</span>
+                </div>
+                <hr />
+                <div className="flex justify-between font-semibold text-lg">
+                  <span>Total</span>
+                  <span>₹{calculateTotal().toFixed(2)}</span>
+                </div>
+
+                <Button
+                  className="w-full"
+                  size="lg"
+                  onClick={handleCheckout}
+                  disabled={isProcessing || !isAuthenticated}
+                >
+                  {isProcessing ? "Processing..." : "Proceed to Checkout"}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full mt-2"
+                  onClick={clearCart}
+                >
+                  Clear Cart
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\lib\auth.ts ===
+import jwt from 'jsonwebtoken';
+
+export interface UserPayload {
+  userId: string;
+  name?: string;
+  email?: string;
+  phone?: string;   // Add phone here
+}
+
+const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
+
+export async function verifyToken(
+  request: { headers: { get: (k: string) => string | null } }
+): Promise<UserPayload | null> {
+  try {
+    const cookieHeader = request.headers.get('cookie') || '';
+    const cookies = Object.fromEntries(
+      cookieHeader
+        .split(';')
+        .map(c => c.trim().split('='))
+        .filter(([k, v]) => k && v)
+        .map(([k, v]) => [k, decodeURIComponent(v)])
+    );
+    const token = cookies['token'];
+    if (!token) return null;
+    const decoded = jwt.verify(token, JWT_SECRET) as UserPayload;
+    return decoded;
+  } catch (err) {
+    console.error('Token verification error:', err);
+    return null;
+  }
+}
+
+
+=== File: C:\Users\saisagar\Downloads\agriculture-app (2)\models\Order.ts ===
+import mongoose, { Schema, model, models, Document } from 'mongoose';
+
+export interface OrderItem {
+  productId: mongoose.Types.ObjectId;
+  name?: string;
+  price?: number;
+  quantity?: number;
+  image?: string;
+}
+
+export interface ShippingAddress {
+  street?: string;
+  city?: string;
+  state?: string;
+  zipCode?: string;
+  country?: string;
+}
+
+export interface OrderDoc extends Document {
+  _id: mongoose.Types.ObjectId;
+  userId: mongoose.Types.ObjectId;
+  items: OrderItem[];
+  totalAmount: number;
+  status: 'pending' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled';
+  paymentStatus: 'pending' | 'completed' | 'failed';
+  paymentId?: string;
+  razorpayOrderId?: string;
+  razorpayPaymentLinkId?: string;
+  paymentUrl?: string;
+  shippingAddress?: ShippingAddress;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const OrderSchema = new Schema<OrderDoc>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    items: [
+      {
+        productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
+        name: String,
+        price: Number,
+        quantity: Number,
+        image: String,
+      },
+    ],
+    totalAmount: { type: Number, required: true },
+    status: {
+      type: String,
+      enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'],
+      default: 'pending',
+    },
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'completed', 'failed'],
+      default: 'pending',
+    },
+    paymentId: String,
+    razorpayOrderId: String,
+    razorpayPaymentLinkId: String,
+    paymentUrl: String,
+    shippingAddress: {
+      street: String,
+      city: String,
+      state: String,
+      zipCode: String,
+      country: String,
+    },
+  },
+  { timestamps: true }
+);
+
+export const Order =
+  (models.Order as mongoose.Model<OrderDoc>) || model<OrderDoc>('Order', OrderSchema);
+
+
+=== File:  ===
+[Error reading file]: [Errno 2] No such file or directory: ''
+
+=== File:  ===
+[Error reading file]: [Errno 2] No such file or directory: ''
+
+=== File:  ===
+[Error reading file]: [Errno 2] No such file or directory: ''
+
+=== File:  ===
+[Error reading file]: [Errno 2] No such file or directory: ''

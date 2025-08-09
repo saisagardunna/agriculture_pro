@@ -1,49 +1,72 @@
-import { useCartContext } from "@/components/providers/cart-provider"
+import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 
-export function useCart() {
-  const { state, dispatch } = useCartContext()
-
-  const addItem = (item: {
-    id: string
-    name: string
-    price: number
-    image: string
-    quantity: number
-  }) => {
-    dispatch({ type: "ADD_ITEM", payload: item })
-  }
-
-  const removeItem = (id: string) => {
-    dispatch({ type: "REMOVE_ITEM", payload: id })
-  }
-
-  const updateQuantity = (id: string, quantity: number) => {
-    if (quantity <= 0) {
-      removeItem(id)
-    } else {
-      dispatch({ type: "UPDATE_QUANTITY", payload: { id, quantity } })
-    }
-  }
-
-  const clearCart = () => {
-    dispatch({ type: "CLEAR_CART" })
-  }
-
-  const getTotalPrice = () => {
-    return state.items.reduce((total, item) => total + item.price * item.quantity, 0)
-  }
-
-  const getTotalItems = () => {
-    return state.items.reduce((total, item) => total + item.quantity, 0)
-  }
-
-  return {
-    items: state.items,
-    addItem,
-    removeItem,
-    updateQuantity,
-    clearCart,
-    getTotalPrice,
-    getTotalItems,
-  }
+export interface CartItem {
+  id: string;
+  name: string;
+  price: number;
+  quantity: number;
+  image?: string;
 }
+
+interface CartState {
+  items: CartItem[];
+  addItem: (item: CartItem) => void;
+  updateQuantity: (id: string, quantity: number) => void;
+  removeItem: (id: string) => void;
+  getTotalPrice: () => number;
+  clearCart: () => void;
+}
+
+export const useCart = create<CartState>()(
+  persist(
+    (set, get) => ({
+      items: [],
+      addItem: (item: CartItem) =>
+        set((state: CartState) => {
+          console.log("Adding item:", item);
+          const existingItem = state.items.find((i) => i.id === item.id);
+          if (existingItem) {
+            return {
+              items: state.items.map((i) =>
+                i.id === item.id ? { ...i, quantity: i.quantity + item.quantity } : i
+              ),
+            };
+          }
+          return { items: [...state.items, item] };
+        }),
+      updateQuantity: (id: string, quantity: number) =>
+        set((state: CartState) => {
+          console.log("Updating quantity for", id, "to", quantity);
+          return {
+            items: state.items
+              .map((item) =>
+                item.id === id ? { ...item, quantity: Math.max(1, quantity) } : item
+              )
+              .filter((item) => item.quantity > 0),
+          };
+        }),
+      removeItem: (id: string) =>
+        set((state: CartState) => {
+          console.log("Removing item", id);
+          return {
+            items: state.items.filter((item) => item.id !== id),
+          };
+        }),
+      getTotalPrice: () => {
+        const total = get().items.reduce((total: number, item: CartItem) => total + item.price * item.quantity, 0);
+        console.log("Calculating total price:", total);
+        return total;
+      },
+      clearCart: () => {
+        console.log("Clearing cart");
+        set({ items: [] });
+        console.log("Cart cleared in store");
+      },
+    }),
+    {
+      name: "cart-storage",
+      storage: createJSONStorage(() => localStorage),
+    }
+  )
+);

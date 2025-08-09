@@ -1,4 +1,4 @@
-import mongoose from "mongoose"
+import mongoose from "mongoose";
 
 const productSchema = new mongoose.Schema(
   {
@@ -41,7 +41,16 @@ const productSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  },
-)
+  }
+);
 
-export const Product = mongoose.models.Product || mongoose.model("Product", productSchema)
+// Pre-save hook to truncate price decimals before saving
+productSchema.pre("save", function (next) {
+  if (this.price) {
+    this.price = Math.floor(this.price);
+  }
+  next();
+});
+
+export const Product =
+  mongoose.models.Product || mongoose.model("Product", productSchema);
